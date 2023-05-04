@@ -299,7 +299,11 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     encoder_hidden_states=encoder_hidden_states,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
-                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample
+                hidden_states = temp_attn(
+                    hidden_states,
+                    num_frames=num_frames,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                ).sample
                 hidden_states = resnet(hidden_states, temb)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames)
 
@@ -465,9 +469,13 @@ class CrossAttnDownBlock3D(nn.Module):
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    cross_attention_kwargs=cross_attention_kwargs,
+                    cross_attention_kwargs=cross_attention_kwargs
                 ).sample
-                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample
+                hidden_states = temp_attn(
+                    hidden_states,
+                    num_frames=num_frames,
+                    cross_attention_kwargs=cross_attention_kwargs
+                ).sample
 
                 output_states += (hidden_states,)
 
@@ -739,7 +747,11 @@ class CrossAttnUpBlock3D(nn.Module):
                     encoder_hidden_states=encoder_hidden_states,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
-                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample
+                hidden_states = temp_attn(
+                    hidden_states,
+                    num_frames=num_frames,
+                    cross_attention_kwargs=cross_attention_kwargs
+                ).sample
 
         elif not self.temp_convs and not self.temp_attentions:
             for resnet, attn in zip(self.resnets, self.attentions):
