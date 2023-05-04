@@ -469,12 +469,10 @@ class CrossAttnDownBlock3D(nn.Module):
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    cross_attention_kwargs=cross_attention_kwargs
+                    cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
                 hidden_states = temp_attn(
-                    hidden_states,
-                    num_frames=num_frames,
-                    cross_attention_kwargs=cross_attention_kwargs
+                    hidden_states, num_frames=num_frames, cross_attention_kwargs=cross_attention_kwargs
                 ).sample
 
                 output_states += (hidden_states,)
@@ -748,9 +746,7 @@ class CrossAttnUpBlock3D(nn.Module):
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
                 hidden_states = temp_attn(
-                    hidden_states,
-                    num_frames=num_frames,
-                    cross_attention_kwargs=cross_attention_kwargs
+                    hidden_states, num_frames=num_frames, cross_attention_kwargs=cross_attention_kwargs
                 ).sample
 
         elif not self.temp_convs and not self.temp_attentions:
