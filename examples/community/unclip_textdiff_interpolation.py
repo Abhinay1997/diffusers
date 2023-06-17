@@ -1,4 +1,4 @@
-from diffusers import DiffusionPipeline, DDIMInverseScheduler, UNet2DModel, UNet2DConditionModel, UnCLIPScheduler
+from diffusers import DiffusionPipeline, DDIMInverseScheduler, UNet2DModel, UNet2DConditionModel, UnCLIPScheduler, DDIMScheduler, ImagePipelineOutput
 from transformers import CLIPTextModelWithProjection, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPImageProcessor
 from transformers.models.clip.modeling_clip import CLIPTextModelOutput
 
@@ -6,6 +6,7 @@ from diffusers.pipelines.unclip import UnCLIPTextProjModel
 from diffusers.utils import logging, randn_tensor, is_accelerate_available, is_accelerate_version
 from typing import List, Union, Optional, Tuple
 from torch.nn import functional as F
+import inspect
 
 import torch
 unclip_checkpoint = "kakaobrain/karlo-v1-alpha"
@@ -90,7 +91,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
 
         image_embeddings = image_embeddings.repeat_interleave(num_images_per_prompt, dim=0)
 
-        return image_embeddings
+        return image_embeddings, image
     
     def _encode_prompt(
         self,
@@ -137,7 +138,8 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             batch_size = text_model_output[0].shape[0]
             prompt_embeds, text_encoder_hidden_states = text_model_output[0], text_model_output[1]
             text_mask = text_attention_mask
-
+        
+        print(f'prompt_embeds in encode {batch_size}, {prompt_embeds.shape}')
         prompt_embeds = prompt_embeds.repeat_interleave(num_images_per_prompt, dim=0)
         text_encoder_hidden_states = text_encoder_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
         text_mask = text_mask.repeat_interleave(num_images_per_prompt, dim=0)
@@ -177,36 +179,20 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             # Here we concatenate the unconditional and text embeddings into a single batch
             # to avoid doing two forward passes
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+            print(f"prompt embeds classifier free {prompt_embeds.shape}")
             text_encoder_hidden_states = torch.cat([uncond_text_encoder_hidden_states, text_encoder_hidden_states])
 
             text_mask = torch.cat([uncond_text_mask, text_mask])
 
         return prompt_embeds, text_encoder_hidden_states, text_mask
-        
-
-    def __call__(self, image, base_prompt, target_prompt, num_steps):
-        image_embeds = image_encoder.preprocess(image)
-        
-        print("Generating image embeddings completed")
-        base_prompt_embeds = encode_prompt(base_prompt)
-        target_prompt_embeds = encode_prompt(target_prompt)
-
-        text_diff = norm_diff(base_prompt_embeds, target_prompt_embeds)
-        
-        for val in linspace(0.25, 0.50, num_steps):
-            image
-    
-    def invert(self, image_embeds):
-        decoder_latents = prepare_latents(image_embeds)
-
-        original_noise = decoder.decode(decoder_latents)
     
     # Copied from unclip_pipeline.__call__
-    def decode(self, prompt, image_embeddings, do_classifier_free_guidance, decoder_num_inference_steps = 30, invert = False):
+    @torch.no_grad()
+    def decode(self, prompt, image_embeddings, decoder_latents = None, do_classifier_free_guidance = True, decoder_num_inference_steps = 30, invert = False):
         
         device = self._execution_device
         generator = None
-        decoder_guidance_scale = 7.5
+        decoder_guidance_scale = 1
 
         if invert:
             scheduler = self.inverse_scheduler
@@ -219,7 +205,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             num_images_per_prompt=1,
             do_classifier_free_guidance=do_classifier_free_guidance,
         )
-
+        print(f"prompt embeds {prompt_embeds.shape}, image embeds {image_embeddings.shape}, hidden {text_encoder_hidden_states.shape}")
         text_encoder_hidden_states, additive_clip_time_embeddings = self.text_proj(
             image_embeddings=image_embeddings,
             prompt_embeds=prompt_embeds,
@@ -251,7 +237,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             text_encoder_hidden_states.dtype,
             device,
             generator,
-            None,
+            decoder_latents,
             self.decoder_scheduler,
         )
         
@@ -266,7 +252,6 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
                 class_labels=additive_clip_time_embeddings,
                 attention_mask=decoder_text_mask,
             ).sample
-            print(noise_pred.shape)
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred_uncond, _ = noise_pred_uncond.split(latent_model_input.shape[1], dim=1)
@@ -280,8 +265,12 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
                 prev_timestep = decoder_timesteps_tensor[i + 1]
 
             # compute the previous noisy sample x_t -> x_t-1
-            print(f"{noise_pred.shape} and {decoder_latents.shape}")
             if isinstance(scheduler,DDIMInverseScheduler):
+                noise_pred, _ = torch.split(noise_pred, decoder_latents.shape[1], dim=1)
+                decoder_latents = scheduler.step(
+                    noise_pred, t, decoder_latents
+                ).prev_sample
+            elif isinstance(scheduler, DDIMScheduler):
                 noise_pred, _ = torch.split(noise_pred, decoder_latents.shape[1], dim=1)
                 decoder_latents = scheduler.step(
                     noise_pred, t, decoder_latents
@@ -319,7 +308,6 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
         ]
         for cpu_offloaded_model in models:
             cpu_offload(cpu_offloaded_model, device)
-            
     @property
     def _execution_device(self):
         r"""
@@ -337,3 +325,130 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             ):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
+
+    def __call__(
+        self,
+        image,
+        base_prompt,
+        target_prompt,
+        num_interp_steps=5,
+        num_inference_steps=50,
+        super_res_num_inference_steps=7,
+        super_res_latents=None,
+        generator=None,
+        output_type='pt',
+        return_dict=False
+    ):
+        
+        device = self._execution_device
+        # 1. Get the Image embeddings, z_i and the original image, x_0
+        image_embeds, preprocessed_image = self._encode_image(image, device, num_images_per_prompt=1)
+        print(f'Image embeds and preprocessed image: {image_embeds.shape}, {preprocessed_image.shape}')
+        # 2. Reduce the size of the image to match decoder sample size. 
+        # resize_processor = self.feature_extractor.copy()
+        # size = self.decoder.config.sample_size
+        # resize_processor.crop_size = {'height':size,'width':size}
+        # resize_processor.size = {'shortest_edge': size}
+        # preprocessed_image = resize_processor(images=preprocessed_image, return_tensors="pt").pixel_values
+        import torchvision
+        preprocessed_image = torchvision.transforms.functional.resize(preprocessed_image, (64,64))
+        print(f'After resizing preprocessed image: {image_embeds.shape}, {preprocessed_image.shape}')
+
+        # 3. Get the original decoder noise X_T
+        orig_noise = self.decode(
+            "", image_embeddings=image_embeds, decoder_latents=preprocessed_image, do_classifier_free_guidance=False,decoder_num_inference_steps=num_inference_steps,invert=True
+        )
+        print(f'Original noise: {orig_noise.shape}')
+        # 4. Get the base_prompt embeddings and the target_prompt embeddings 
+        base_prompt_embeds, base_text_encoder_hidden_states, base_text_mask = self._encode_prompt(base_prompt, device, num_images_per_prompt=1, do_classifier_free_guidance=True)
+        target_prompt_embeds, target_text_encoder_hidden_states, target_text_mask = self._encode_prompt(target_prompt, device, num_images_per_prompt=1, do_classifier_free_guidance=True)
+
+        # 4. Compute the normalised text_diff of target and base prompt embeddings
+        norm_text_diff_embeds = (target_prompt_embeds - base_prompt_embeds) / torch.norm((target_prompt_embeds - base_prompt_embeds))
+        print(f'norm_text_diff_embeds: {norm_text_diff_embeds.shape}')
+        # 5. Get the interp embeddings for all the interpolation steps
+        interp_image_embeddings = []
+        for interp_step in torch.linspace(0.25, 0.50, num_interp_steps):
+            temp_image_embeddings = slerp(
+                interp_step, image_embeds, norm_text_diff_embeds
+            ).unsqueeze(0)
+            interp_image_embeddings.append(temp_image_embeddings)
+        
+        interp_image_embeddings = torch.cat(interp_image_embeddings).to(device)
+        print(f'interp_image_embeddings: {interp_image_embeddings.shape}')
+        # 6. Get the decoded images for all the interpolation steps
+        image_small = self.decode(
+            [""] * num_interp_steps, image_embeddings=interp_image_embeddings, decoder_latents=orig_noise.repeat(num_interp_steps,1,1,1), do_classifier_free_guidance=True,decoder_num_inference_steps=num_inference_steps,invert=False
+        )
+        print(f'image_small_shape: {image_small.shape}')
+
+        self.super_res_scheduler.set_timesteps(super_res_num_inference_steps, device=device)
+        super_res_timesteps_tensor = self.super_res_scheduler.timesteps
+
+        channels = self.super_res_first.in_channels // 2
+        height = self.super_res_first.sample_size
+        width = self.super_res_first.sample_size
+        
+        # Let's use the same super res decoder noise for all interpolation images
+        super_res_latents = self.prepare_latents(
+            (1, channels, height, width),
+            image_small[0].dtype,
+            device,
+            generator,
+            super_res_latents,
+            self.super_res_scheduler,
+        )
+
+        if device.type == "mps":
+            # MPS does not support many interpolations
+            image_upscaled = F.interpolate(image_small, size=[height, width])
+        else:
+            interpolate_antialias = {}
+            if "antialias" in inspect.signature(F.interpolate).parameters:
+                interpolate_antialias["antialias"] = True
+
+            image_upscaled = F.interpolate(
+                image_small, size=[height, width], mode="bicubic", align_corners=False, **interpolate_antialias
+            )
+
+        for i, t in enumerate(self.progress_bar(super_res_timesteps_tensor)):
+            # no classifier free guidance
+
+            if i == super_res_timesteps_tensor.shape[0] - 1:
+                unet = self.super_res_last
+            else:
+                unet = self.super_res_first
+
+            latent_model_input = torch.cat([super_res_latents, image_upscaled], dim=1)
+
+            noise_pred = unet(
+                sample=latent_model_input,
+                timestep=t,
+            ).sample
+
+            if i + 1 == super_res_timesteps_tensor.shape[0]:
+                prev_timestep = None
+            else:
+                prev_timestep = super_res_timesteps_tensor[i + 1]
+
+            # compute the previous noisy sample x_t -> x_t-1
+            super_res_latents = self.super_res_scheduler.step(
+                noise_pred, t, super_res_latents, prev_timestep=prev_timestep, generator=generator
+            ).prev_sample
+
+        image = super_res_latents
+        # done super res
+
+        # post processing
+
+        image = image * 0.5 + 0.5
+        image = image.clamp(0, 1)
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+
+        if output_type == "pil":
+            image = self.numpy_to_pil(image)
+
+        if not return_dict:
+            return (image,)
+
+        return ImagePipelineOutput(images=image)
