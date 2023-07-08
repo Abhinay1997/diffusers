@@ -231,7 +231,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
         width = self.decoder.config.sample_size
         
         #
-        batch_size = 1
+        batch_size = len(prompt) if isinstance(prompt,list) else 1
         decoder_latents = self.prepare_latents(
             (batch_size, num_channels_latents, height, width),
             text_encoder_hidden_states.dtype,
@@ -326,6 +326,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
+    @torch.no_grad()
     def __call__(
         self,
         image,
@@ -360,8 +361,8 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
         )
         print(f'Original noise: {orig_noise.shape}')
         # 4. Get the base_prompt embeddings and the target_prompt embeddings 
-        base_prompt_embeds, base_text_encoder_hidden_states, base_text_mask = self._encode_prompt(base_prompt, device, num_images_per_prompt=1, do_classifier_free_guidance=True)
-        target_prompt_embeds, target_text_encoder_hidden_states, target_text_mask = self._encode_prompt(target_prompt, device, num_images_per_prompt=1, do_classifier_free_guidance=True)
+        base_prompt_embeds, base_text_encoder_hidden_states, base_text_mask = self._encode_prompt(base_prompt, device, num_images_per_prompt=1, do_classifier_free_guidance=False)
+        target_prompt_embeds, target_text_encoder_hidden_states, target_text_mask = self._encode_prompt(target_prompt, device, num_images_per_prompt=1, do_classifier_free_guidance=False)
 
         # 4. Compute the normalised text_diff of target and base prompt embeddings
         norm_text_diff_embeds = (target_prompt_embeds - base_prompt_embeds) / torch.norm((target_prompt_embeds - base_prompt_embeds))
@@ -370,7 +371,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
         interp_image_embeddings = []
         for interp_step in torch.linspace(0.25, 0.50, num_interp_steps):
             temp_image_embeddings = slerp(
-                interp_step, image_embeds, norm_text_diff_embeds
+                interp_step, image_embeds[0], norm_text_diff_embeds[0]
             ).unsqueeze(0)
             interp_image_embeddings.append(temp_image_embeddings)
         
@@ -378,7 +379,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
         print(f'interp_image_embeddings: {interp_image_embeddings.shape}')
         # 6. Get the decoded images for all the interpolation steps
         image_small = self.decode(
-            [""] * num_interp_steps, image_embeddings=interp_image_embeddings, decoder_latents=orig_noise.repeat(num_interp_steps,1,1,1), do_classifier_free_guidance=True,decoder_num_inference_steps=num_inference_steps,invert=False
+            [""] * num_interp_steps, image_embeddings=interp_image_embeddings, decoder_latents=orig_noise.repeat(num_interp_steps,1,1,1), do_classifier_free_guidance=False,decoder_num_inference_steps=num_inference_steps,invert=False
         )
         print(f'image_small_shape: {image_small.shape}')
 
@@ -398,6 +399,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             super_res_latents,
             self.super_res_scheduler,
         )
+        super_res_latents = super_res_latents.repeat((num_interp_steps,1,1,1))
 
         if device.type == "mps":
             # MPS does not support many interpolations
@@ -419,6 +421,7 @@ class UnCLIPTextDiffInterpolationPipeline(DiffusionPipeline):
             else:
                 unet = self.super_res_first
 
+            print(f'super_res_latents {super_res_latents.shape} and image_upscaled: {image_upscaled.shape}')
             latent_model_input = torch.cat([super_res_latents, image_upscaled], dim=1)
 
             noise_pred = unet(
