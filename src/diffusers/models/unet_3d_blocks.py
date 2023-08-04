@@ -31,6 +31,7 @@ def get_down_block(
     resnet_eps,
     resnet_act_fn,
     num_attention_heads,
+    attn_num_head_channels,
     resnet_groups=None,
     cross_attention_dim=None,
     downsample_padding=None,
