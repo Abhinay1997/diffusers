@@ -276,6 +276,8 @@
       title: Text-to-video
     - local: api/pipelines/text_to_video_zero
       title: Text2Video-Zero
+    - local: api/pipelines/tune_a_video
+      title: Tune-A-Video
     - local: api/pipelines/unclip
       title: UnCLIP
     - local: api/pipelines/latent_diffusion_uncond

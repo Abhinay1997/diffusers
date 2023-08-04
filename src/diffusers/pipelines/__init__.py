@@ -28,6 +28,7 @@ else:
     from .pndm import PNDMPipeline
     from .repaint import RePaintPipeline
     from .score_sde_ve import ScoreSdeVePipeline
+    from .spectrogram_diffusion import SpectrogramDiffusionPipeline
     from .stochastic_karras_ve import KarrasVePipeline
 
 try:
@@ -116,6 +117,7 @@ else:
     )
     from .t2i_adapter import StableDiffusionAdapterPipeline
     from .text_to_video_synthesis import TextToVideoSDPipeline, TextToVideoZeroPipeline, VideoToVideoSDPipeline
+    from .tune_a_video import TuneAVideoPipeline
     from .unclip import UnCLIPImageVariationPipeline, UnCLIPPipeline
     from .unidiffuser import ImageTextPipelineOutput, UniDiffuserModel, UniDiffuserPipeline, UniDiffuserTextDecoder
     from .versatile_diffusion import (
