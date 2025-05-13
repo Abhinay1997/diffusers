@@ -274,6 +274,7 @@ class VisualClozePipeline(
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
         upsampling_strength: float = 1.0,
+        enable_heuristic_timestep_skip: bool = False
     ):
         r"""
         Function invoked when calling the VisualCloze pipeline for generation.
@@ -378,6 +379,7 @@ class VisualClozePipeline(
             callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
             max_sequence_length=max_sequence_length,
             output_type=output_type if upsampling_strength == 0 else "pil",
+            enable_heuristic_timestep_skip = enable_heuristic_timestep_skip
         )
         if upsampling_strength == 0:
             if not return_dict:

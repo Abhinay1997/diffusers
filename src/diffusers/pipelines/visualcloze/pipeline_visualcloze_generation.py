@@ -701,6 +701,7 @@ class VisualClozeGenerationPipeline(
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
+        enable_heuristic_timestep_skip: bool = False
     ):
         r"""
         Function invoked when calling the VisualCloze pipeline for generation.
@@ -867,6 +868,7 @@ class VisualClozeGenerationPipeline(
             guidance = None
 
         # 6. Denoising loop
+        noise_pred_previous = None
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -875,19 +877,22 @@ class VisualClozeGenerationPipeline(
                 # Broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latent_model_input = torch.cat((latents, masked_image_latents), dim=2)
-
-                noise_pred = self.transformer(
-                    hidden_states=latent_model_input,
-                    timestep=timestep / 1000,
-                    guidance=guidance,
-                    pooled_projections=pooled_prompt_embeds,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,
-                    img_ids=latent_image_ids,
-                    joint_attention_kwargs=self.joint_attention_kwargs,
-                    return_dict=False,
-                )[0]
-
+                
+                if enable_heuristic_timestep_skip and i > num_inference_steps // 2 and i % 2 == 0 and i != (num_inference_steps - 1):
+                    noise_pred = noise_pred_previous
+                else:
+                    noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        pooled_projections=pooled_prompt_embeds,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
+                        img_ids=latent_image_ids,
+                        joint_attention_kwargs=self.joint_attention_kwargs,
+                        return_dict=False,
+                    )[0]
+                noise_pred_previous = noise_pred
                 # Compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
